@@ -227,12 +227,9 @@ class ConcurrentDownloader(object):
     transparent to the users of this class.
 
     """
-    def __init__(self, api, job, part_size=DEFAULT_PART_SIZE,
+    def __init__(self, job, part_size=DEFAULT_PART_SIZE,
                  num_threads=10):
         """
-        :type api: :class:`boto.glacier.layer1.Layer1`
-        :param api: A layer1 glacier object.
-
         :type job: :class:`boto.glacier.job.Job`
         :param job: A job glacier object.
 
@@ -243,7 +240,6 @@ class ConcurrentDownloader(object):
 
         """
 
-        self._api = api
         self._part_size = part_size
         self._num_threads = num_threads
         self._threads = []
@@ -261,7 +257,7 @@ class ConcurrentDownloader(object):
         """
 
         total_size = job.archive_size
-        total_parts = int(math.ceil(total_size / float(self._part_size)))
+        total_parts = int(math.ceil(total_size / float(self._part_size)))        
         log.debug("Total Parts {0}".format(total_parts))
         worker_queue = Queue()
         result_queue = Queue()
@@ -274,7 +270,6 @@ class ConcurrentDownloader(object):
                       "download.")
             raise e
         log.debug("Completing download.")
-        #return response['ArchiveId']
         return 'FOO'
 
     def _wait_for_download_threads(self, result_queue, total_parts):
