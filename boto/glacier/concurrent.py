@@ -354,7 +354,5 @@ class DownloadWorkerThread(threading.Thread):
         part_number, part_size = work
         start_byte = part_number * part_size
         byte_range = (start_byte, start_byte + part_size - 1)
-        response = self._job.get_output(byte_range)
-       # Reading the response allows the connection to be reused.
-        response.read()
-        return part_number
+        chunk = self._job.get_output(byte_range).read()
+        return (part_number, chunk)
