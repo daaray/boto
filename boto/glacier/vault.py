@@ -23,7 +23,7 @@
 
 from .job import Job
 from .writer import Writer, compute_hashes_from_fileobj
-from .concurrent import ConcurrentUploader
+from .concurrent import ConcurrentUploader, ConcurrentDownloader
 import os.path
 
 _MEGABYTE = 1024 * 1024
@@ -171,6 +171,29 @@ class Vault(object):
         uploader = ConcurrentUploader(self.layer1, self.name)
         archive_id = uploader.upload(filename)
         return archive_id
+
+    def concurrent_download_archive_from_job(self, job):
+        """
+        Download an archive from a job.
+
+        This is a convenience method around the
+        :class:`boto.glacier.concurrent.ConcurrentDownloader`
+        class.  This method will perform an get_output via byte_range
+        and download the parts of the job concurrently.
+
+        :type job: :class:`boto.glacier.job.Job`
+        :param job: A job glacier object.
+
+        :raises: `boto.glacier.exception.DownloadArchiveError` is an error
+            occurs during the download process.
+
+        :rtype: str
+        :return: The output of get_output
+
+        """
+        downloader = ConcurrentDownloader(self.layer1, job)
+        ouput = downloader.download(job)
+        return output
 
     def retrieve_archive(self, archive_id, sns_topic=None,
                          description=None):

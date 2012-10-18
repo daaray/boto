@@ -28,7 +28,7 @@ import logging
 from Queue import Queue, Empty
 
 from .writer import chunk_hashes, tree_hash, bytes_to_hex
-from .exceptions import UploadArchiveError
+from .exceptions import UploadArchiveError, DownloadArchiveError
 
 
 DEFAULT_PART_SIZE = 4 * 1024 * 1024
@@ -211,3 +211,150 @@ class UploadWorkerThread(threading.Thread):
         # Reading the response allows the connection to be reused.
         response.read()
         return (part_number, tree_hash_bytes)
+
+##############################################################################################
+#  Concurrent Downloader
+##############################################################################################
+
+
+class ConcurrentDownloader(object):
+    """Concurrently download an archive to glacier.
+
+    This class uses a thread pool to concurrently download an archive
+    to glacier using the get_output by byte_range API.
+
+    The threadpool is completely managed by this class and is
+    transparent to the users of this class.
+
+    """
+    def __init__(self, api, job, part_size=DEFAULT_PART_SIZE,
+                 num_threads=10):
+        """
+        :type api: :class:`boto.glacier.layer1.Layer1`
+        :param api: A layer1 glacier object.
+
+        :type job: :class:`boto.glacier.job.Job`
+        :param job: A job glacier object.
+
+        :type part_size: int
+        :param part_size: The size, in bytes, of the chunks to use when downloading
+            the archive parts.  The part size must be a megabyte multiplied by
+            a power of two.
+
+        """
+
+        self._api = api
+        self._part_size = part_size
+        self._num_threads = num_threads
+        self._threads = []
+
+    def download(self, job):
+        """Concurrently download an archive.
+
+        :type job: :class: `boto.glacier.job.Job`
+        :param file: A job glacier object
+
+        :type part_size: int
+        :param part_size: The size, in bytes, of the chunks to use when uploading
+            the archive parts.  The part size must be a megabyte multiplied by
+            a power of two.
+        """
+
+        total_size = job.archive_size
+        total_parts = int(math.ceil(total_size / float(self._part_size)))
+        log.debug("Total Parts {0}".format(total_parts))
+        worker_queue = Queue()
+        result_queue = Queue()
+        self._add_work_items_to_queue(total_parts, worker_queue)
+        self._start_download_threads(result_queue, worker_queue, job)
+        try:
+            self._wait_for_download_threads(result_queue, total_parts)
+        except DownloadArchiveError, e:
+            log.debug("An error occurred while downloading an archive, aborting "
+                      "download.")
+            raise e
+        log.debug("Completing download.")
+        #return response['ArchiveId']
+        return 'FOO'
+
+    def _wait_for_download_threads(self, result_queue, total_parts):
+        for _ in xrange(total_parts):
+            result = result_queue.get()
+            if isinstance(result, Exception):
+                log.debug("An error was found in the result queue, terminating "
+                          "threads: %s", result)
+                self._shutdown_threads()
+                raise DownloadArchiveError("An error occurred while uploading "
+                                         "an archive: %s" % result)
+        self._shutdown_threads()
+
+    def _shutdown_threads(self):
+        log.debug("Shutting down threads.")
+        for thread in self._threads:
+            thread.should_continue = False
+        for thread in self._threads:
+            thread.join()
+        log.debug("Threads have exited.")
+
+    def _start_download_threads(self, result_queue, worker_queue, job):
+        log.debug("Starting threads.")
+        for _ in xrange(self._num_threads):
+            thread = DownloadWorkerThread(job, worker_queue, result_queue)
+            time.sleep(0.2)
+            thread.start()
+            self._threads.append(thread)
+
+    def _add_work_items_to_queue(self, total_parts, worker_queue):
+        log.debug("Adding work items to queue.")
+        for i in xrange(total_parts):
+            worker_queue.put((i, self._part_size))
+        for i in xrange(self._num_threads):
+            worker_queue.put(_END_SENTINEL)
+
+
+class DownloadWorkerThread(threading.Thread):
+    def __init__(self, job,
+                 worker_queue, result_queue, num_retries=5,
+                 time_between_retries=5,
+                 retry_exceptions=Exception):
+        threading.Thread.__init__(self)
+        self._job = job
+        self._worker_queue = worker_queue
+        self._result_queue = result_queue
+        self._num_retries = num_retries
+        self._time_between_retries = time_between_retries
+        self._retry_exceptions = retry_exceptions
+        self.should_continue = True
+
+    def run(self):
+        while self.should_continue:
+            try:
+                work = self._worker_queue.get(timeout=1)
+            except Empty:
+                continue
+            if work is _END_SENTINEL:
+                return
+            result = self._process_chunk(work)
+            self._result_queue.put(result)
+
+    def _process_chunk(self, work):
+        result = None
+        for _ in xrange(self._num_retries):
+            try:
+                result = self._download_chunk(work)
+                break
+            except self._retry_exceptions, e:
+                log.error("Exception caught downloading part number %s for "
+                          "job %s", work[0], self._job)
+                time.sleep(self._time_between_retries)
+                result = e
+        return result
+
+    def _download_chunk(self, work):
+        part_number, part_size = work
+        start_byte = part_number * part_size
+        byte_range = (start_byte, start_byte + part_size - 1)
+        response = self._job.get_output(byte_range)
+       # Reading the response allows the connection to be reused.
+        response.read()
+        return part_number
